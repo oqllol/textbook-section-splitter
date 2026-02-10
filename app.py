@@ -14,6 +14,8 @@ st.title("📚 教科書セクション分割ツール")
 st.markdown("""
 このアプリは、教科書のMarkdownテキストを**テーマ(### 見出し)**ごとに個別のTXTファイルに分割し、
 ZIPファイルとして一括ダウンロードできるツールです。
+
+**✨ 複数ファイルを一度にアップロード**して、自動的に全て処理できます!
 """)
 
 # ファイル名として使用できない文字を置換する関数
@@ -99,13 +101,13 @@ def split_by_sections(text, remove_pages=False):
     
     return result
 
-# ZIPファイルを作成する関数
-def create_zip(sections):
+# ZIPファイルを作成する関数(複数ファイル対応)
+def create_zip_from_multiple_files(file_sections_dict):
     """
-    セクションのリストからZIPファイルを作成
+    複数のファイルから分割されたセクションをまとめてZIPファイルを作成
     
     Args:
-        sections: [(番号, タイトル, 内容), ...] のリスト
+        file_sections_dict: {元ファイル名: [(番号, タイトル, 内容), ...], ...}
     
     Returns:
         ZIPファイルのバイトデータ
@@ -113,13 +115,19 @@ def create_zip(sections):
     zip_buffer = io.BytesIO()
     
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for number, title, content in sections:
-            # ファイル名を作成
-            safe_title = sanitize_filename(title)
-            filename = f"{number}_{safe_title}.txt"
+        for original_filename, sections in file_sections_dict.items():
+            # 元のファイル名から拡張子を除いたベース名を取得
+            base_name = Path(original_filename).stem
+            safe_base_name = sanitize_filename(base_name)
             
-            # ZIPに追加
-            zip_file.writestr(filename, content)
+            # 各セクションをZIPに追加
+            for number, title, content in sections:
+                # ファイル名を作成: 元ファイル名_番号_タイトル.txt
+                safe_title = sanitize_filename(title)
+                filename = f"{safe_base_name}_{number}_{safe_title}.txt"
+                
+                # ZIPに追加
+                zip_file.writestr(filename, content)
     
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
@@ -127,11 +135,12 @@ def create_zip(sections):
 # メインのUI
 st.markdown("---")
 
-# ファイルアップロード
-uploaded_file = st.file_uploader(
+# ファイルアップロード(複数対応)
+uploaded_files = st.file_uploader(
     "📁 Markdownファイル(.md または .txt)をアップロードしてください",
     type=['md', 'txt'],
-    help="教科書の文字起こしテキストファイルを選択してください"
+    accept_multiple_files=True,
+    help="複数のファイルを一度に選択できます"
 )
 
 # オプション設定
@@ -142,64 +151,98 @@ remove_pages = st.checkbox(
     help="チェックすると、テキスト内の **[ページ x]** 形式の表記が削除されます"
 )
 
-if uploaded_file is not None:
-    # ファイルを読み込み
-    try:
-        text_content = uploaded_file.read().decode('utf-8')
-        
-        st.success(f"✅ ファイル「{uploaded_file.name}」を読み込みました")
-        
-        # 処理ボタン
-        if st.button("🔄 分割処理を実行", type="primary"):
-            with st.spinner("処理中..."):
-                # テキストを分割
-                sections = split_by_sections(text_content, remove_pages)
-                
-                if len(sections) == 0:
-                    st.error("❌ ### 見出しが見つかりませんでした。ファイルの形式を確認してください。")
-                else:
-                    # 結果を表示
-                    st.markdown("---")
-                    st.markdown("### 📊 分割結果")
-                    st.info(f"**{len(sections)}個のファイル**に分割されました")
+if uploaded_files and len(uploaded_files) > 0:
+    st.success(f"✅ {len(uploaded_files)}個のファイルを読み込みました")
+    
+    # アップロードされたファイル一覧を表示
+    with st.expander("📄 アップロードされたファイル一覧", expanded=False):
+        for i, file in enumerate(uploaded_files, 1):
+            st.markdown(f"{i}. `{file.name}`")
+    
+    # 処理ボタン
+    if st.button("🔄 全ファイルを分割処理", type="primary"):
+        with st.spinner("処理中..."):
+            all_file_sections = {}
+            total_sections = 0
+            error_files = []
+            
+            # 各ファイルを処理
+            for uploaded_file in uploaded_files:
+                try:
+                    # ファイルを読み込み
+                    text_content = uploaded_file.read().decode('utf-8')
                     
-                    # ファイル一覧を表示
-                    st.markdown("#### 📄 生成されるファイル一覧:")
+                    # テキストを分割
+                    sections = split_by_sections(text_content, remove_pages)
+                    
+                    if len(sections) > 0:
+                        all_file_sections[uploaded_file.name] = sections
+                        total_sections += len(sections)
+                    else:
+                        error_files.append(f"{uploaded_file.name} (見出しが見つかりません)")
+                
+                except UnicodeDecodeError:
+                    error_files.append(f"{uploaded_file.name} (エンコーディングエラー)")
+                except Exception as e:
+                    error_files.append(f"{uploaded_file.name} ({str(e)})")
+            
+            # 結果を表示
+            st.markdown("---")
+            st.markdown("### 📊 分割結果")
+            
+            if len(all_file_sections) > 0:
+                st.info(f"**{len(all_file_sections)}個のファイル**から**{total_sections}個のセクション**に分割されました")
+                
+                # ファイルごとの詳細を表示
+                st.markdown("#### 📄 生成されるファイル一覧:")
+                for original_filename, sections in all_file_sections.items():
+                    st.markdown(f"**{original_filename}** → {len(sections)}個のセクション")
+                    
+                    base_name = Path(original_filename).stem
+                    safe_base_name = sanitize_filename(base_name)
+                    
                     for number, title, content in sections:
                         safe_title = sanitize_filename(title)
-                        filename = f"{number}_{safe_title}.txt"
+                        filename = f"{safe_base_name}_{number}_{safe_title}.txt"
                         lines = len(content.split('\n'))
                         chars = len(content)
-                        st.markdown(f"- `{filename}` ({lines}行, {chars}文字)")
-                    
-                    # ZIPファイルを作成
-                    zip_data = create_zip(sections)
-                    
-                    # ダウンロードボタン
-                    st.markdown("---")
-                    st.download_button(
-                        label="📥 ZIPファイルをダウンロード",
-                        data=zip_data,
-                        file_name="textbook_sections.zip",
-                        mime="application/zip",
-                        type="primary"
-                    )
-                    
-                    st.success("✅ 処理が完了しました!上のボタンからZIPファイルをダウンロードできます。")
-    
-    except UnicodeDecodeError:
-        st.error("❌ ファイルの読み込みに失敗しました。UTF-8エンコーディングのテキストファイルを使用してください。")
-    except Exception as e:
-        st.error(f"❌ エラーが発生しました: {str(e)}")
+                        st.markdown(f"  - `{filename}` ({lines}行, {chars}文字)")
+                
+                # エラーがあったファイルを表示
+                if error_files:
+                    st.warning("⚠️ 以下のファイルは処理できませんでした:")
+                    for error_file in error_files:
+                        st.markdown(f"  - {error_file}")
+                
+                # ZIPファイルを作成
+                zip_data = create_zip_from_multiple_files(all_file_sections)
+                
+                # ダウンロードボタン
+                st.markdown("---")
+                st.download_button(
+                    label="📥 全ファイルをZIPでダウンロード",
+                    data=zip_data,
+                    file_name="textbook_sections_all.zip",
+                    mime="application/zip",
+                    type="primary"
+                )
+                
+                st.success("✅ 処理が完了しました!上のボタンからZIPファイルをダウンロードできます。")
+            else:
+                st.error("❌ 処理できるファイルがありませんでした。")
+                if error_files:
+                    st.markdown("**エラー詳細:**")
+                    for error_file in error_files:
+                        st.markdown(f"  - {error_file}")
 
 else:
-    st.info("👆 まずはファイルをアップロードしてください")
+    st.info("👆 まずはファイルをアップロードしてください(複数選択可能)")
 
 # フッター
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: gray; font-size: 0.9em;'>
-    <p>📚 Textbook Section Splitter v1.0</p>
-    <p>Markdownテキストを ### 見出しで自動分割</p>
+    <p>📚 Textbook Section Splitter v2.0</p>
+    <p>複数のMarkdownテキストを ### 見出しで自動分割</p>
 </div>
 """, unsafe_allow_html=True)
